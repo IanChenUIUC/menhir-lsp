@@ -167,10 +167,10 @@ let with_merlin ~(doc : Text_document.t)
   let pipeline = MK.Mpipeline.make config source in
   MK.Mpipeline.with_pipeline pipeline (fun () -> f source pipeline)
 
-let get_merlin_completions ~(uri : uri) ~(pos : Position.t) (prefix : word)
-    source pipeline =
+let get_merlin_completions ~(uri : uri) ~(pos : Position.t) ?(query_pos = pos)
+    (prefix : word) source pipeline =
   let open O in
-  let logical_pos = Position.logical pos in
+  let logical_pos = Position.logical query_pos in
   let query =
     Query_protocol.Complete_prefix (prefix.v, logical_pos, [], false, true)
   in
@@ -269,6 +269,20 @@ let get_merlin_type ~(doc : Text_document.t) ~(pos : Position.t) expression =
 
 let get_merlin_compls ~uri ~pos word =
   with_merlin ~doc:word.td (get_merlin_completions ~uri ~pos word)
+
+let get_merlin_definition ~(doc : Text_document.t) ~(pos : Position.t) =
+  let logical_pos = Position.logical pos in
+  with_merlin ~doc (fun _source pipeline ->
+      let query = Query_protocol.Locate (None, `ML, logical_pos) in
+      match Query_commands.dispatch pipeline query with
+      | `Found (file, def_pos) -> Some (file, def_pos)
+      | `Builtin s -> log "Locate: builtin %s" s; None
+      | `Not_in_env s -> log "Locate: not in env %s" s; None
+      | `File_not_found s -> log "Locate: file not found %s" s; None
+      | `Not_found (s, _) -> log "Locate: not found %s" s; None
+      | `Invalid_context -> log "Locate: invalid context"; None
+      | `At_origin -> log "Locate: at origin"; None)
+  |> O.flatten
 
 let parse_ocaml_impl s =
   let lexbuf = Lexing.from_string s in
@@ -404,11 +418,50 @@ let lookup_source (sourcemap : Line_directives.source_mapping list)
       (String.escaped line) sub src_text; *)
     let m_startp, _m_endp = m.range in
     (* Reconstruct the range of the query symbol in the implementation. *)
-    let res_startp =
-      { m_startp with pos_cnum = m_startp.pos_cnum + start_col }
+    let bol =
+      L.(take j lines |> fold_left (fun acc l -> acc + String.length l + 1) 0)
+      + m_startp.pos_cnum
     in
-    let res_endp = { m_startp with pos_cnum = m_startp.pos_cnum + end_col } in
+    let line_startp =
+      { m_startp with pos_lnum = m_startp.pos_lnum + j; pos_bol = bol }
+    in
+    let res_startp = { line_startp with pos_cnum = bol + start_col } in
+    let res_endp = { line_startp with pos_cnum = bol + end_col } in
     let res = (res_startp, res_endp) in
     log "Success: %a --> %a" Range.pp_lexing src_pos Range.pp_lexing res;
     Some res
   with Invalid_argument _ -> None
+
+(** Maps a line of the source code to the start of the code in the
+    implementation section generated from it. Unlike [lookup_source], this does
+    not depend on the contents of the line, which may be newer than the
+    implementation. *)
+let lookup_section (sourcemap : Line_directives.source_mapping list)
+    (src_lnum : int) : Lexing.position option =
+  let open Line_directives in
+  let open O in
+  let* m =
+    L.find_opt
+      (fun m ->
+        let n = L.length (String.split_on_char '\n' m.text) - 1 in
+        m.src_line <= src_lnum && src_lnum < m.src_line + n)
+      sourcemap
+  in
+  let m_startp, _ = m.range in
+  let+ i =
+    Seq.init (String.length m.text) Fun.id
+    |> Seq.find (fun i -> not (String.contains " \t\r\n" m.text.[i]))
+  in
+  let before = String.sub m.text 0 i in
+  let newlines = L.length (String.split_on_char '\n' before) - 1 in
+  let pos_bol =
+    String.rindex_opt before '\n'
+    >|= (fun k -> m_startp.pos_cnum + k + 1)
+    |> get_or ~default:m_startp.pos_bol
+  in
+  {
+    m_startp with
+    pos_lnum = m_startp.pos_lnum + newlines;
+    pos_bol;
+    pos_cnum = m_startp.pos_cnum + i;
+  }

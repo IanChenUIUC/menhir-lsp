@@ -630,7 +630,7 @@ let definition ~(notify_back : notify_back) (state : state)
   let* sym_range, sym = symbol_at_position ~notify_back state pos in
   log "Symbol under cursor: %s" sym.v;
   (* Search for the symbol in the terminals or in the nonterminals. *)
-  let+ def =
+  (let+ def =
     let open L in
     (* It could also be a semantic binding (producer) inside a branch! *)
     log "Checking if we're inside an action...";
@@ -670,7 +670,21 @@ let definition ~(notify_back : notify_back) (state : state)
   log "found definition at: %a" M.Range.pp def.p;
   Location.create
     ~range:(Range.of_lexical_positions def.p)
-    ~uri:(TD.documentUri doc)
+    ~uri:(TD.documentUri doc))
+  <|> fun () ->
+  match skewer state ~offset ~doc ~pos with
+  | OCaml | Action _ ->
+      let* impl_pos, _ = lookup_source state.sourcemap sym.p sym.v in
+      let* impl = state.implementation in
+      let+ file, def_pos =
+        get_merlin_definition ~doc:impl
+          ~pos:(Position.of_lexical_position impl_pos)
+      in
+      log "found OCaml definition in %a at %a" pp_stropt file
+        Range.pp_lexing (def_pos, def_pos);
+      let uri = file >|= Uri.of_path |> get_or ~default:(TD.documentUri impl) in
+      Location.create ~uri ~range:(Range.of_lexical_positions (def_pos, def_pos))
+  | _ -> None
 
 let completions ~(notify_back : Linol_lwt.Jsonrpc2.notify_back)
     ~(word : word option) ~(pos : Position.t) ~(uri : uri) (state : state) :
@@ -688,7 +702,11 @@ let completions ~(notify_back : Linol_lwt.Jsonrpc2.notify_back)
   let* { p = rng; offset; _ } = word in
   let merlin_completions () =
     (let* word = word in
-     get_merlin_compls ~uri ~pos word)
+     (let* impl_pos = lookup_section state.sourcemap (pos.line + 1) in
+      let* impl = state.implementation in
+      let query_pos = Position.of_lexical_position impl_pos in
+      with_merlin ~doc:impl (get_merlin_completions ~uri ~pos ~query_pos word))
+     <|> fun () -> get_merlin_compls ~uri ~pos word)
     |> get_or_nil
   in
   let+ { p = rng; offset; td = doc } = word in
