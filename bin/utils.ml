@@ -465,3 +465,39 @@ let lookup_section (sourcemap : Line_directives.source_mapping list)
     pos_bol;
     pos_cnum = m_startp.pos_cnum + i;
   }
+
+(** Finds [name] in the code Menhir generates itself, outside every section
+    copied from the source. This is where the OCaml types of [%type]
+    declarations appear, which have no line directives. *)
+let lookup_generated (sourcemap : Line_directives.source_mapping list)
+    (impl : Text_document.t) (name : string) : Position.t option =
+  let open Line_directives in
+  let text = TD.text impl in
+  let len = String.length name in
+  let is_ident_char = function
+    | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '\'' | '.' -> true
+    | _ -> false
+  in
+  let is_whole i =
+    (i = 0 || not (is_ident_char text.[i - 1]))
+    && (i + len = String.length text || not (is_ident_char text.[i + len]))
+  in
+  let in_section i =
+    L.exists
+      (fun m ->
+        let startp, endp = m.range in
+        startp.pos_cnum <= i && i < endp.pos_cnum)
+      sourcemap
+  in
+  let rec find start =
+    match CCString.find ~start ~sub:name text with
+    | -1 -> None
+    | i when in_section i || not (is_whole i) -> find (i + 1)
+    | i ->
+        let last = i + len - 1 in
+        let before = String.sub text 0 last in
+        let line = L.length (String.split_on_char '\n' before) - 1 in
+        let bol = String.rindex_opt before '\n' |> O.map_or ~default:0 succ in
+        Some ({ line; character = last - bol } : Position.t)
+  in
+  find 0

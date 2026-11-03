@@ -674,11 +674,14 @@ let definition ~(notify_back : notify_back) (state : state)
   <|> fun () ->
   match skewer state ~offset ~doc ~pos with
   | OCaml | Action _ ->
-      let* impl_pos, _ = lookup_source state.sourcemap sym.p sym.v in
       let* impl = state.implementation in
       let+ file, def_pos =
-        get_merlin_definition ~doc:impl
-          ~pos:(Position.of_lexical_position impl_pos)
+        (let* impl_pos, _ = lookup_source state.sourcemap sym.p sym.v in
+         get_merlin_definition ~doc:impl
+           ~pos:(Position.of_lexical_position impl_pos))
+        <|> fun () ->
+        let* impl_pos = lookup_generated state.sourcemap impl sym.v in
+        get_merlin_definition ~doc:impl ~pos:impl_pos
       in
       log "found OCaml definition in %a at %a" pp_stropt file
         Range.pp_lexing (def_pos, def_pos);
