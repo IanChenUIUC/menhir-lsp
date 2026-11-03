@@ -58,7 +58,27 @@ let compile_completions ?(range : Range.t option) ~(kind : CompletionItemKind.t)
 
 let _build_dir = ref None
 
+(** The nearest ancestor of the working directory that contains [_build]. *)
+let find_build_root () =
+  let rec up dir =
+    if Sys.file_exists (Filename.concat dir "_build") then Some dir
+    else
+      let parent = Filename.dirname dir in
+      if String.equal parent dir then None else up parent
+  in
+  up (Sys.getcwd ())
+
 let get_build_dir () =
+  (* [dune describe] fails while dune runs in watch mode, which locks the build
+     directory; fall back to the default build context. *)
+  let fallback msg =
+    match find_build_root () with
+    | Some root ->
+        let dir = (root, "_build/default") in
+        _build_dir := Some dir;
+        Ok dir
+    | None -> Error msg
+  in
   let f () =
     let default_msg = "Failure: dune describe." in
     try
@@ -73,10 +93,9 @@ let get_build_dir () =
              :: _)) ->
           _build_dir := Some (root_dir, context);
           Ok (root_dir, context)
-      | _ -> Error default_msg (* should never happen in practice *)
+      | _ -> fallback default_msg
     with _ ->
-      (* May fail due to 'A running dune (pid: ..) instance has locked the build directory.') *)
-      Error
+      fallback
         (default_msg
        ^ "\n\
           Is dune running in watch mode?\n\
