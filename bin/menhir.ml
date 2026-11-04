@@ -677,6 +677,13 @@ let definition ~(notify_back : notify_back) (state : state)
       let* impl = state.implementation in
       let+ file, def_pos =
         (let* impl_pos, _ = lookup_source state.sourcemap sym.p sym.v in
+         let sym_startp, _ = sym.p in
+         let shift =
+           pos.character - (sym_startp.pos_cnum - sym_startp.pos_bol)
+           |> max 0
+           |> min (String.length sym.v - 1)
+         in
+         let impl_pos = { impl_pos with pos_cnum = impl_pos.pos_cnum + shift } in
          get_merlin_definition ~doc:impl
            ~pos:(Position.of_lexical_position impl_pos))
         <|> fun () ->

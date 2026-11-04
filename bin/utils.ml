@@ -383,12 +383,28 @@ let read_file_contents filename =
   close_in ic;
   contents
 
+(** Replaces the line directives of [text] with blanks of the same length.
+    Merlin renumbers the lines that follow a directive, while queries on the
+    implementation use its physical positions. *)
+let blank_line_directives text =
+  let is_directive line =
+    String.length line > 1
+    && line.[0] = '#'
+    &&
+    let rest = String.trim (String.sub line 1 (String.length line - 1)) in
+    rest <> "" && match rest.[0] with '0' .. '9' -> true | _ -> false
+  in
+  String.split_on_char '\n' text
+  |> L.map (fun line ->
+      if is_directive line then String.make (String.length line) ' ' else line)
+  |> String.concat "\n"
+
 let get_source_map uri =
   let log s = log_src "get_source_map" s in
   match get_ocaml_impl uri with
   | Ok path ->
       let text = read_file_contents path in
-      let doc = TD.create ~text (Uri.of_path path) in
+      let doc = TD.create ~text:(blank_line_directives text) (Uri.of_path path) in
       let sourcemap =
         text |> Lexing.from_string
         |> Menhir_lsp_lib.Line_directives.read_line_directives []
