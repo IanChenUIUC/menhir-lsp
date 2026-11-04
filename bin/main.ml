@@ -40,6 +40,9 @@ class lsp_server =
     val msg_buffers : (uri, Msg.state) Hashtbl.t = Hashtbl.create 32
     val mly_buffers : (uri, Mly.state) Hashtbl.t = Hashtbl.create 32
     val mll_buffers : (uri, Mll.state) Hashtbl.t = Hashtbl.create 32
+
+    (* Modification time of the generated implementation each buffer's state was loaded from. *)
+    val impl_mtimes : (uri, float option) Hashtbl.t = Hashtbl.create 32
     val client_capabilities : ClientCapabilities.t option ref = ref None
 
     val client_markdown_support : MarkdownClientCapabilities.t option ref =
@@ -87,9 +90,24 @@ class lsp_server =
       fun ?msg_handler ?mll_handler ?mly_handler ~notify_back uri ->
         let open O in
         doc_type_of_uri uri >>= function
-        | Mll -> mll_handler <*> Hashtbl.find_opt mll_buffers uri
-        | Mly -> mly_handler <*> Hashtbl.find_opt mly_buffers uri
+        | Mll ->
+            self#_reload_if_rebuilt ~notify_back uri;
+            mll_handler <*> Hashtbl.find_opt mll_buffers uri
+        | Mly ->
+            self#_reload_if_rebuilt ~notify_back uri;
+            mly_handler <*> Hashtbl.find_opt mly_buffers uri
         | Messages -> msg_handler <*> Hashtbl.find_opt msg_buffers uri
+
+    (** Reprocesses [uri] when its generated implementation changed since the
+        buffer's state was loaded, e.g. after a rebuild by [dune build --watch]. *)
+    method private _reload_if_rebuilt ~notify_back (uri : uri) : unit =
+      match (Hashtbl.find_opt impl_mtimes uri, self#find_doc uri) with
+      | Some loaded, Some doc
+        when not
+               (Stdlib.Option.equal Stdlib.Float.equal loaded
+                  (get_ocaml_impl_mtime uri)) ->
+          ignore (self#_on_doc ~notify_back uri doc.content)
+      | _ -> ()
 
     method! config_completion =
       Some
@@ -475,6 +493,7 @@ class lsp_server =
       let log s = log_src "_on_doc" s in
       log "Processing file %a" pp_uri uri;
       set_notify_back notify_back;
+      Hashtbl.replace impl_mtimes uri (get_ocaml_impl_mtime uri);
 
       (* Update or register for the first time the state of a server buffer if [contents] is valid, otherwise notify any problem found within [contents] through diagnostics. *)
       let go buffers loader diagnose =
@@ -550,6 +569,7 @@ class lsp_server =
     method on_notif_doc_did_close ~notify_back:_ d : unit Linol_lwt.t =
       Hashtbl.remove mly_buffers d.uri;
       Hashtbl.remove mll_buffers d.uri;
+      Hashtbl.remove impl_mtimes d.uri;
       Linol_lwt.return ()
   end
 

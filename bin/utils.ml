@@ -377,6 +377,12 @@ let get_ocaml_impl uri =
 
 let get_ocaml_intf = fetch_build_dir ~ext:".mli"
 
+(** Modification time of the implementation generated from [uri], if it exists. *)
+let get_ocaml_impl_mtime uri =
+  match get_ocaml_impl uri with
+  | Ok path -> ( try Some (Unix.stat path).st_mtime with Unix.Unix_error _ -> None)
+  | Error _ -> None
+
 let read_file_contents filename =
   let ic = open_in filename in
   let contents = really_input_string ic (in_channel_length ic) in
